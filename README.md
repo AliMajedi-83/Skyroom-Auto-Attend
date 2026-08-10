@@ -32,11 +32,16 @@ GUI Mode:
 
 make run
 ```
+![Skyroom Bot GUI](assets/1.png)
+
+
 CLI Mode:
 ```Bash
 
 ./venv/bin/python3 cli.py -h
 ```
+![Skyroom Bot GUI](assets/3.png)
+
 ## 🪟 Windows Edition Guide
 
 ### 🚀 Setup & Usage
