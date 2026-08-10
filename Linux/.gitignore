@@ -1,0 +1,20 @@
+# Environments
+venv/
+__pycache__/
+*.pyc
+
+# Database and Logs
+classes.db
+logs/
+*.log
+
+# Media Output files
+*.mp4
+*.mp3
+
+# Downloaded Drivers
+geckodriver
+geckodriver-*.tar.gz
+
+# OS generated files
+.DS_Store

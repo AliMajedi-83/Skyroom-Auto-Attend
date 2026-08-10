@@ -1,0 +1,22 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.env
+
+# Database
+classes.db
+
+# Media recordings
+*.mp3
+*.mp4
+*.wav
+*.avi
+
+# IDEs
+.vscode/
+.idea/
