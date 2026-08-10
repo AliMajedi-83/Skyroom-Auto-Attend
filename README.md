@@ -39,9 +39,6 @@ CLI Mode:
 ```
 ## 🪟 Windows Edition Guide
 
-⚠️ ChromeDriver Troubleshooting
-
-Due to filtering, chromedriver.exe is pre-included in Windows/core/bin/. If the bot crashes, your Chrome browser version doesn't match the driver. Fix: Download the **chromedriver-win64** from https://googlechromelabs.github.io/chrome-for-testing/ and replace the file in core/bin/.
 ### 🚀 Setup & Usage
 ```Bash
 Open the Windows folder.
@@ -52,3 +49,8 @@ Double-click install.bat to install Python dependencies.
 ```Bash
 Double-click run.bat to launch the GUI bot in the background.
 ```
+### ⚠️ ChromeDriver Troubleshooting
+
+Due to filtering, chromedriver.exe is pre-included in Windows/core/bin/. If the bot crashes, your Chrome browser version doesn't match the driver.
+
+Fix: Download the **chromedriver-win64** from https://googlechromelabs.github.io/chrome-for-testing/ and replace the file in core/bin/.
