@@ -58,4 +58,4 @@ Double-click run.bat to launch the GUI bot in the background.
 
 Due to filtering, chromedriver.exe is pre-included in Windows/core/bin/. If the bot crashes, your Chrome browser version doesn't match the driver.
 
-Fix: Download the **chromedriver-win64** from https://googlechromelabs.github.io/chrome-for-testing/ and replace the file in core/bin/.
+Fix: First update your **Chrome Browser**. Then download **chromedriver-win64** from https://googlechromelabs.github.io/chrome-for-testing/ and replace the file in core/bin/.
