@@ -21,41 +21,34 @@ This repository contains two dedicated versions optimized for **Linux (PulseAudi
 ### 🛠️ Setup & Installation
 Thanks to the integrated `Makefile`, setting up the project takes only one command:
 ```bash
-git clone [https://github.com/AliMajedi-83/Skyroom-Auto-Attend.git](https://github.com/AliMajedi-83/Skyroom-Auto-Attend.git)
+git clone https://github.com/AliMajedi-83/Skyroom-Auto-Attend.git
 cd Skyroom-Auto-Attend/Linux
 make setup
-
-🚀 Usage
+```
+### 🚀 Usage
 
 GUI Mode:
-Bash
+```Bash
 
 make run
-
+```
 CLI Mode:
-Bash
+```Bash
 
 ./venv/bin/python3 cli.py -h
-
-🪟 Windows Edition Guide
-⚠️ CRITICAL WINDOWS SETUP
-
-To make this bot capture internal audio without background microphone noise, you MUST enable "Stereo Mix":
-
-    Right-click the Speaker icon -> Sounds (Recording tab).
-
-    Check "Show Disabled Devices".
-
-    Right-click Stereo Mix -> Enable and Set as Default Device.
+```
+## 🪟 Windows Edition Guide
 
 ⚠️ ChromeDriver Troubleshooting
 
-Due to filtering, chromedriver.exe is pre-included in Windows/core/bin/. If the bot crashes, your Chrome browser version doesn't match the driver.
-Fix: Download the matching chromedriver-win64 from Chrome for Testing and replace the file in core/bin/.
-🚀 Setup & Usage
-
-    Open the Windows folder.
-
-    Double-click install.bat to install Python dependencies.
-
-    Double-click run.bat to launch the GUI bot in the background.
+Due to filtering, chromedriver.exe is pre-included in Windows/core/bin/. If the bot crashes, your Chrome browser version doesn't match the driver. Fix: Download the **chromedriver-win64** from https://googlechromelabs.github.io/chrome-for-testing/ and replace the file in core/bin/.
+### 🚀 Setup & Usage
+```Bash
+Open the Windows folder.
+```
+```Bash
+Double-click install.bat to install Python dependencies.
+```
+```Bash
+Double-click run.bat to launch the GUI bot in the background.
+```
