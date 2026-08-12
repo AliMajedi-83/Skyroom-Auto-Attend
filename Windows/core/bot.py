@@ -11,7 +11,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from logger import app_logger  # استفاده از لاگر جدید اضافه شده به پروژه
+from logger import app_logger
 
 def get_screen_resolution():
     try:
@@ -32,7 +32,6 @@ class SkyroomClassBot:
         self.id, self.user_name, self.password, self.class_name, self.link, \
         self.schedule_json, self.rec_video, self.rec_audio, self.save_path, self.silence_timeout = self.class_data
         
-        # استخراج تنظیمات پیشرفته (Pause, Max Duration)
         try:
             sched = json.loads(self.schedule_json)
             settings = sched.get("_settings", {})
@@ -45,14 +44,14 @@ class SkyroomClassBot:
         timestamp = time.strftime("%Y%m%d_%H%M")
         self.base_filename = os.path.join(self.save_path, f"{self.class_name}_{timestamp}")
         
-        # متغیرهای مربوط به مدیریت فایل‌های موقت (مانند نسخه قبلی ویندوز)
+
         self.video_temp = f"{self.base_filename}_temp.mp4"
         self.audio_temp = f"{self.base_filename}_temp.wav"
         
         self.ffmpeg_path = os.path.join("bin", "ffmpeg.exe") if os.path.exists(os.path.join("bin", "ffmpeg.exe")) else "ffmpeg"
         
-        # متغیرهای وضعیت Pause
-        self.is_paused = True # کلاس در ابتدا متوقف است تا اولین صدا شنیده شود
+
+        self.is_paused = True 
         self.class_start_time = None
         self.recorded_video_parts = []
         self.recorded_audio_parts = []
@@ -64,15 +63,15 @@ class SkyroomClassBot:
         app_logger.info(f"Starting class session: {self.class_name}. Waiting for the first sound to begin recording...")
         self.class_start_time = time.time()
         
-        # اجرای مرورگر
+
         threading.Thread(target=self.run_browser).start()
         
         time.sleep(15)
-        # اجرای همزمان ضبط و مانیتورینگ صدا
+
         threading.Thread(target=self.capture_and_monitor).start()
 
     def start_recording_part(self):
-        # این تابع زمانی فراخوانی می‌شود که صدا شنیده شود
+
         try:
             current_video = f"{self.video_temp}_part{self.part_num:03d}.mp4"
             current_audio = f"{self.audio_temp}_part{self.part_num:03d}.wav"
@@ -96,13 +95,13 @@ class SkyroomClassBot:
                
             if self.rec_audio or self.rec_video:
                  self.recorded_audio_parts.append(current_audio)
-                 # فایل wav در خود تابع capture_and_monitor مدیریت می‌شود، اینجا فقط مسیر را تعیین کردیم.
+
                  
         except Exception as e:
             app_logger.error(f"Failed to start FFmpeg recording: {e}")
 
     def pause_recording(self):
-        # متوقف کردن ضبط تصویر
+
         if self.ffmpeg_process:
             try:
                  self.ffmpeg_process.communicate(b'q', timeout=5)
@@ -121,7 +120,6 @@ class SkyroomClassBot:
         self.start_recording_part()
 
     def capture_and_monitor(self):
-        # منطق اصلی ضبط صدا با pyaudiowpatch دقیقا مطابق خواسته شما حفظ شد
         if not (self.rec_audio or self.rec_video):
             return
 
@@ -147,9 +145,8 @@ class SkyroomClassBot:
             app_logger.info(f"Perfect Audio Capture Engine Initialized: {target_device['name']}")
 
             silence_start = time.time()
-            threshold = 300  # حد آستانه سکوت
-            
-            wf = None # فایل wav کنونی
+            threshold = 300  
+            wf = None 
             
             stream = p.open(
                 format=pya.paInt16,
@@ -162,7 +159,6 @@ class SkyroomClassBot:
 
             while self.is_running:
                 try:
-                    # بررسی حداکثر زمان کلاس
                     if self.class_start_time and (time.time() - self.class_start_time) >= (self.max_dur_min * 60):
                         app_logger.info(f"Max class duration reached ({self.max_dur_min} mins). Forcing termination.")
                         self.stop_all()
@@ -181,7 +177,6 @@ class SkyroomClassBot:
                         else:
                             elapsed = time.time() - silence_start
                             
-                            # Pause کردن ضبط پس از pause_sec ثانیه سکوت
                             if not self.is_paused and elapsed >= self.pause_sec:
                                 self.pause_recording()
                                 if wf:
@@ -195,7 +190,7 @@ class SkyroomClassBot:
                                     self.last_reload_time = time.time()
 
                                     
-                            # خروج کامل پس از silence_timeout دقیقه
+
                             if elapsed >= (self.silence_timeout * 60):
                                 print(f"\n[ALERT] {self.silence_timeout} minutes of pure silence reached! Exiting...")
                                 app_logger.info("Total silence exit threshold reached.")
@@ -208,7 +203,7 @@ class SkyroomClassBot:
                         if silence_start is not None:
                             if self.is_paused:
                                 self.resume_recording()
-                                # باز کردن فایل wav جدید برای این پارت
+
                                 current_audio = self.recorded_audio_parts[-1]
                                 wf = wave.open(current_audio, 'wb')
                                 wf.setnchannels(channels)
@@ -221,7 +216,6 @@ class SkyroomClassBot:
                         if not self.is_paused:
                             print(f"\r[Class Audio: {volume}] {bars}".ljust(75), end="", flush=True)
                             
-                    # نوشتن دیتا در فایل wav اگر ضبط در حال انجام است
                     if not self.is_paused and wf:
                          wf.writeframes(data)
 
@@ -239,7 +233,7 @@ class SkyroomClassBot:
             p.terminate()
 
     def merge_recorded_parts(self):
-        # ترکیب پارت‌های ضبط شده تصویر
+
         final_video = None
         if self.rec_video and self.recorded_video_parts:
             if len(self.recorded_video_parts) == 1:
@@ -270,7 +264,7 @@ class SkyroomClassBot:
                 except Exception as e:
                     app_logger.error(f"Failed to merge video parts: {e}")
                     
-        # ترکیب پارت‌های ضبط شده صدا
+
         final_audio = None
         if (self.rec_video or self.rec_audio) and self.recorded_audio_parts:
              if len(self.recorded_audio_parts) == 1:
@@ -279,7 +273,7 @@ class SkyroomClassBot:
                        os.rename(self.recorded_audio_parts[0], final_audio)
              else:
                   app_logger.info(f"Merging {len(self.recorded_audio_parts)} audio parts...")
-                  # ترکیب wav فایل‌ها
+
                   final_audio = self.audio_temp
                   try:
                       out_wav = wave.open(final_audio, 'wb')
@@ -321,7 +315,7 @@ class SkyroomClassBot:
                 self.ffmpeg_path, "-y", 
                 "-i", final_vid_temp, 
                 "-i", final_aud_temp, 
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "32k", final_mp4 # کاهش بیت ریت صدا مشابه لینوکس
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "32k", final_mp4 
             ]
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
             app_logger.info(f"Final class recording saved: {final_mp4}")
@@ -331,7 +325,7 @@ class SkyroomClassBot:
                 os.remove(final_aud_temp)
             except: pass
             
-            # استخراج MP3 نهایی
+
             app_logger.info("Extracting MP3 from the final MP4...")
             mp3_file = f"{self.base_filename}.mp3"
             extract_cmd = [self.ffmpeg_path, "-y", "-i", final_mp4, "-c:a", "libmp3lame", "-ab", "32k", "-ac", "1", "-ar", "44100", "-vn", mp3_file]
@@ -358,6 +352,7 @@ class SkyroomClassBot:
     def perform_login(self):
         try:
             wait = WebDriverWait(self.driver, 20)
+            
             if self.user_name and self.password:
                 user_input = wait.until(EC.presence_of_element_located((By.ID, "username")))
                 user_input.clear()
@@ -369,9 +364,32 @@ class SkyroomClassBot:
                 
                 self.driver.find_element(By.ID, "btn_login").click()
                 app_logger.info("Logged in with credentials.")
-            else:
+                
+
+            elif self.user_name and not self.password:
+
                 wait.until(EC.element_to_be_clickable((By.ID, "btn_guest"))).click()
-                app_logger.info("Logged in as guest.")
+                
+
+                guest_name_input = wait.until(EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, ".dialog-content input.full-width")
+                ))
+                guest_name_input.clear()
+                guest_name_input.send_keys(self.user_name)
+                
+
+                submit_guest_btn = wait.until(EC.element_to_be_clickable(
+                    (By.CSS_SELECTOR, ".dialog-footer button.btn")
+                ))
+                submit_guest_btn.click()
+                
+                app_logger.info(f"Successfully logged in as GUEST with name: {self.user_name}")
+                
+
+            else:
+                app_logger.error("Username is required but was not provided. Cannot join class.")
+                self.stop_all()
+
         except Exception as e:
             app_logger.error(f"Login timeout or error: {e}")
 
@@ -404,19 +422,17 @@ class SkyroomClassBot:
             
             self.driver.get(self.link)
             
-            # --- ورود اولیه به کلاس ---
             self.perform_login()
             
             while self.is_running:
                 try:
                     _ = self.driver.window_handles
                     
-                    # --- منطق بارگذاری مجدد و ورود دوباره (re-login) ---
                     if getattr(self, 'needs_reload', False):
                         app_logger.info("Silence > 30s. Auto-reloading and re-joining Skyroom...")
-                        self.driver.get(self.link)  # باز کردن مجدد لینک
-                        time.sleep(3) # مکث کوتاه برای لود شدن فرم
-                        self.perform_login() # لاگین مجدد
+                        self.driver.get(self.link)  
+                        time.sleep(3) 
+                        self.perform_login() 
                         self.needs_reload = False
                         
                 except Exception:
@@ -424,7 +440,7 @@ class SkyroomClassBot:
                     self.stop_all()
                     break
                 
-                time.sleep(1) # کاهش زمان اسلیپ به ۱ ثانیه برای واکنش سریع‌تر
+                time.sleep(1)
                 
         except Exception as e:
             app_logger.error(f"Browser error: {e}")
