@@ -59,3 +59,15 @@ Double-click run.bat to launch the GUI bot in the background.
 Due to filtering, chromedriver.exe is pre-included in Windows/core/bin/. If the bot crashes, your Chrome browser version doesn't match the driver.
 
 Fix: First update your **Chrome Browser**. Then download **chromedriver-win64** from https://googlechromelabs.github.io/chrome-for-testing/ and replace the file in core/bin/.
+
+---
+## ✨ Key Features & Pro Tips
+
+*   **Smart Login:** The bot automatically handles joining classes as a **guest** or a **registered user**. **Tip:** To join as a guest, simply type your desired display name in the User Name field and leave the Password field completely **blank**. If you fill the password field, you will join as a registered user.
+
+
+
+*   **"Ignore Next Session" Toggle:** Skip a single upcoming class (e.g., for a holiday) without deleting your permanent weekly schedule. **Tip:** Select a class from the list and click the "Ignore Next Session" button. The bot will skip the immediate next occurrence and automatically restore the schedule for the following weeks.
+*   **Silence Detection & Resource Management:** Intelligently pauses the FFmpeg recording process during long periods of silence to save CPU/Disk usage and automatically resumes when the instructor speaks again.
+*   **Dynamic UI & Error Prevention:** The GUI automatically locks/unlocks settings based on your chosen recording modes (Audio/Video). Note that `Class Name`, `Class Link`, and `User Name` are strictly mandatory to prevent connection errors.
+*   **Background Processing:** Automatically merges all video and audio chunks seamlessly in the background when the class finishes or is manually closed.
