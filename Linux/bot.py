@@ -57,7 +57,6 @@ class SkyroomClassBot:
         timestamp = time.strftime("%Y%m%d_%H%M")
         self.base_filename = os.path.join(self.save_path, f"{self.class_name}_{timestamp}")
         
-        # تغییر مهم: ربات در حالت Paused استارت می‌شود تا اولین صدا شنیده شود
         self.part_num = 0 
         self.recorded_parts = []
         self.is_paused = True 
@@ -75,12 +74,13 @@ class SkyroomClassBot:
         time.sleep(15)
         set_internal_audio_as_default()
         
-        # دیگر اینجا ضبط را شروع نمی‌کنیم. به محض شنیدن صدا، تابع monitor_silence ضبط را روشن می‌کند.
+
         threading.Thread(target=self.monitor_silence).start()
 
     def perform_login(self):
         try:
             wait = WebDriverWait(self.driver, 20)
+            
             if self.user_name and self.password:
                 user_input = wait.until(EC.presence_of_element_located((By.ID, "username")))
                 user_input.clear()
@@ -91,10 +91,34 @@ class SkyroomClassBot:
                 pass_input.send_keys(self.password)
                 
                 self.driver.find_element(By.ID, "btn_login").click()
-            else:
+                app_logger.info("Successfully logged in as a registered user.")
+                
+
+            elif self.user_name and not self.password:
+
                 wait.until(EC.element_to_be_clickable((By.ID, "btn_guest"))).click()
-            
-            app_logger.info("Successfully logged into the class.")
+                
+
+
+                guest_name_input = wait.until(EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, ".dialog-content input.full-width")
+                ))
+                guest_name_input.clear()
+                guest_name_input.send_keys(self.user_name)
+                
+
+                submit_guest_btn = wait.until(EC.element_to_be_clickable(
+                    (By.CSS_SELECTOR, ".dialog-footer button.btn")
+                ))
+                submit_guest_btn.click()
+                
+                app_logger.info(f"Successfully logged in as GUEST with name: {self.user_name}")
+                
+            else:
+                app_logger.error("Username is required but was not provided. Cannot join class.")
+
+                self.stop_all()
+
         except Exception as e:
             app_logger.error(f"Login timeout or error: {e}")
 
@@ -115,14 +139,12 @@ class SkyroomClassBot:
             self.driver.maximize_window()
             self.driver.get(self.link)
             
-            # --- ورود اولیه به کلاس ---
             self.perform_login()
             
             while self.is_running:
                 try:
                     _ = self.driver.window_handles
                     
-                    # --- منطق بارگذاری مجدد و ورود دوباره (re-login) ---
                     if getattr(self, 'needs_reload', False):
                         app_logger.info("Silence > 30s. Auto-reloading and re-joining Skyroom...")
                         self.driver.get(self.link)  # باز کردن مجدد لینک مطمئن‌تر از رفرش است
@@ -190,7 +212,6 @@ class SkyroomClassBot:
         self.start_recording()
 
     def monitor_silence(self):
-        # تایمر سکوت از لحظه روشن شدن ربات شروع می‌شود تا در صورت عدم تشکیل کلاس، در نهایت بسته شود
         silence_start = time.time()
         threshold = 0.01 
         
@@ -290,11 +311,9 @@ class SkyroomClassBot:
             self.ffmpeg_process.wait()
             self.ffmpeg_process = None
             
-        # انتقال فرآیند سنگین پردازش فایل‌ها به یک ترد پس‌زمینه (Daemon Thread)
         threading.Thread(target=self._process_media_files, daemon=False).start()
 
     def _process_media_files(self):
-        # این متد جدید است که فایل‌ها را در پس‌زمینه پردازش می‌کند
         final_media = self.merge_recorded_parts()
             
         if self.rec_video and self.rec_audio and final_media:
