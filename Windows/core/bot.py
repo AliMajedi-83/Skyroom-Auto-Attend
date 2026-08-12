@@ -1,451 +1,441 @@
-import os
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import database
 import time
-import subprocess
 import threading
 import json
-import ctypes
-import numpy as np
-import pyaudiowpatch as pya
-import wave
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+import os
+import datetime
+from bot import SkyroomClassBot
 from logger import app_logger
 
-def get_screen_resolution():
-    try:
-        user32 = ctypes.windll.user32
-        width = user32.GetSystemMetrics(0)
-        height = user32.GetSystemMetrics(1)
-        return f"{width}x{height}"
-    except Exception:
-        return "1920x1080"
+class SkyroomGUI:
+    def __init__(self, root):
 
-class SkyroomClassBot:
-    def __init__(self, class_data):
-        self.class_data = class_data
-        self.is_running = True
-        self.driver = None
-        self.ffmpeg_process = None
+        self.root = root
+        self.root.title("Skyroom Auto-Attend Bot (Windows Edition)")
+        self.root.geometry("950x800")
+
+        self.active_bots = []
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)  # شنود دکمه ضربدر
         
-        self.id, self.user_name, self.password, self.class_name, self.link, \
-        self.schedule_json, self.rec_video, self.rec_audio, self.save_path, self.silence_timeout = self.class_data
+        app_logger.info("Initializing Skyroom GUI application (Windows Edition).")
+        database.init_db()
+        self.editing_id = None
         
-        try:
-            sched = json.loads(self.schedule_json)
-            settings = sched.get("_settings", {})
-            self.pause_sec = int(settings.get("pause_sec", 60))
-            self.max_dur_min = int(settings.get("max_dur", 90))
-        except:
-            self.pause_sec = 60
-            self.max_dur_min = 90
+        self.notebook = ttk.Notebook(root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        self.tab_list = ttk.Frame(self.notebook)
+        self.tab_add = ttk.Frame(self.notebook)
+        
+        self.notebook.add(self.tab_list, text="Class List")
+        self.notebook.add(self.tab_add, text="Add / Edit Class")
+        
+        self.build_list_tab()
+        self.build_add_tab()
+        
+        threading.Thread(target=self.scheduler_thread, daemon=True).start()
+
+
+
+    def on_closing(self):
+        running_bots = [bot for bot in self.active_bots if bot.is_running]
+        
+        if running_bots:
+            msg = "A class session is currently active.\nIf you exit, Chrome will close and the video will be saved in the background terminal.\n\nAre you sure you want to exit?"
+            if not messagebox.askyesno("Confirm Exit", msg):
+                return
+                
+        app_logger.info("GUI closed by user. Initiating background save...")
+        
+        def background_save():
+            for bot in running_bots:
+                bot.stop_all()
+        
+        if running_bots:
+            save_thread = threading.Thread(target=background_save, daemon=False)
+            save_thread.start()
             
-        timestamp = time.strftime("%Y%m%d_%H%M")
-        self.base_filename = os.path.join(self.save_path, f"{self.class_name}_{timestamp}")
+        self.root.destroy()
+
+    def build_list_tab(self):
+        columns = ("db_id", "row_num", "user", "class", "schedule", "mode")
+        self.tree = ttk.Treeview(self.tab_list, columns=columns, show="headings", 
+                                 displaycolumns=("row_num", "user", "class", "schedule", "mode"))
         
-
-        self.video_temp = f"{self.base_filename}_temp.mp4"
-        self.audio_temp = f"{self.base_filename}_temp.wav"
+        self.tree.heading("row_num", text="#")
+        self.tree.heading("user", text="User")
+        self.tree.heading("class", text="Class Name")
+        self.tree.heading("schedule", text="Schedule")
+        self.tree.heading("mode", text="Recording Mode")
         
-        self.ffmpeg_path = os.path.join("bin", "ffmpeg.exe") if os.path.exists(os.path.join("bin", "ffmpeg.exe")) else "ffmpeg"
+        self.tree.column("row_num", width=40, stretch=False, anchor=tk.CENTER)
+        self.tree.column("user", width=100)
+        self.tree.column("class", width=180)
+        self.tree.column("schedule", width=330)
+        self.tree.column("mode", width=150, anchor=tk.CENTER)
         
-
-        self.is_paused = True 
-        self.class_start_time = None
-        self.recorded_video_parts = []
-        self.recorded_audio_parts = []
-        self.part_num = 0
-        self.last_reload_time = 0
-        self.needs_reload = False
-
-    def start(self):
-        app_logger.info(f"Starting class session: {self.class_name}. Waiting for the first sound to begin recording...")
-        self.class_start_time = time.time()
+        self.tree.pack(fill=tk.BOTH, expand=True, pady=10)
         
-
-        threading.Thread(target=self.run_browser).start()
+        btn_frame = tk.Frame(self.tab_list)
+        btn_frame.pack(fill=tk.X)
         
-        time.sleep(15)
+        tk.Button(btn_frame, text="▶ Join Class Now", bg="#ff9800", fg="black", font=("Arial", 9, "bold"), command=self.join_now).pack(side=tk.LEFT, padx=5)
+        
+        self.btn_ignore = tk.Button(btn_frame, text="⏸ Ignore Next Session", bg="#607d8b", fg="white", font=("Arial", 9, "bold"), command=self.toggle_ignore_next)
+        self.btn_ignore.pack(side=tk.LEFT, padx=5)
+        self.btn_ignore.config(state=tk.DISABLED) # غیرفعال تا زمانی که ردیفی انتخاب شود
+        
+        tk.Button(btn_frame, text="Delete Class", bg="#ff4c4c", fg="white", command=self.delete_selected).pack(side=tk.RIGHT, padx=5)
+        tk.Button(btn_frame, text="Edit Class", bg="#2196F3", fg="white", command=self.edit_selected).pack(side=tk.RIGHT, padx=5)
+        tk.Button(btn_frame, text="Refresh List", command=self.refresh_list).pack(side=tk.RIGHT, padx=5)
+        
+        self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
+        self.refresh_list()
 
-        threading.Thread(target=self.capture_and_monitor).start()
-
-    def start_recording_part(self):
-
-        try:
-            current_video = f"{self.video_temp}_part{self.part_num:03d}.mp4"
-            current_audio = f"{self.audio_temp}_part{self.part_num:03d}.wav"
+    def build_add_tab(self):
+        form = tk.Frame(self.tab_add)
+        form.pack(pady=20, padx=20, fill=tk.BOTH)
+        
+        tk.Label(form, text="User Name / Guest Name (Required):").grid(row=0, column=0, sticky=tk.W, pady=5)
+        self.ent_user = tk.Entry(form)
+        self.ent_user.grid(row=0, column=1, pady=5, sticky=tk.EW)
+        
+        tk.Label(form, text="Password (Optional):").grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.ent_pass = tk.Entry(form, show="*")
+        self.ent_pass.grid(row=1, column=1, pady=5, sticky=tk.EW)
+        
+        help_lbl = tk.Label(form, text="* Note: Leave Password blank to join as GUEST.", fg="gray", font=("Arial", 9, "italic"))
+        help_lbl.grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(0, 15))
+        
+        tk.Label(form, text="Class Name (Required):").grid(row=3, column=0, sticky=tk.W, pady=5)
+        self.ent_class = tk.Entry(form)
+        self.ent_class.grid(row=3, column=1, pady=5, sticky=tk.EW)
+        
+        tk.Label(form, text="Class Link (Required):").grid(row=4, column=0, sticky=tk.W, pady=5)
+        self.ent_link = tk.Entry(form)
+        self.ent_link.grid(row=4, column=1, pady=5, sticky=tk.EW)
+        
+        tk.Label(form, text="Schedule:").grid(row=5, column=0, sticky=tk.NW, pady=5)
+        days_frame = tk.Frame(form)
+        days_frame.grid(row=5, column=1, sticky=tk.W, pady=5)
+        
+        self.days_data = {}
+        days_list = ["Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+        
+        for day in days_list:
+            row_frame = tk.Frame(days_frame)
+            row_frame.pack(fill=tk.X, pady=2)
+            var = tk.BooleanVar()
+            chk = tk.Checkbutton(row_frame, text=day, variable=var, width=12, anchor=tk.W)
+            chk.pack(side=tk.LEFT)
+            ent_time = tk.Entry(row_frame, width=10)
+            ent_time.insert(0, "08:00")
+            ent_time.pack(side=tk.LEFT, padx=5)
+            self.days_data[day] = (var, ent_time)
             
-            if self.rec_video:
-                self.recorded_video_parts.append(current_video)
-                resolution = get_screen_resolution()
-                app_logger.info(f"Recording Windows screen [Part {self.part_num}] started (Video Only).")
-                cmd = [
-                    self.ffmpeg_path, "-y", "-f", "gdigrab", "-framerate", "15", "-video_size", resolution, "-i", "desktop",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "34", current_video
-                ]
+        tk.Label(form, text="Recording Options:").grid(row=6, column=0, sticky=tk.W, pady=10)
+        mode_frame = tk.Frame(form)
+        mode_frame.grid(row=6, column=1, sticky=tk.W, pady=10)
+        self.var_video = tk.BooleanVar(value=True)
+        self.var_audio = tk.BooleanVar(value=True)
+        tk.Checkbutton(mode_frame, text="Record Video", variable=self.var_video, command=self.toggle_recording_settings).pack(side=tk.LEFT, padx=5)
+        tk.Checkbutton(mode_frame, text="Record Audio", variable=self.var_audio, command=self.toggle_recording_settings).pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(form, text="Pause record if silence (sec):").grid(row=7, column=0, sticky=tk.W, pady=5)
+        self.ent_pause = tk.Entry(form)
+        self.ent_pause.insert(0, "60")
+        self.ent_pause.grid(row=7, column=1, pady=5, sticky=tk.EW)
+        
+        tk.Label(form, text="Exit completely if silence (mins):").grid(row=8, column=0, sticky=tk.W, pady=5)
+        self.ent_silence = tk.Entry(form)
+        self.ent_silence.insert(0, "15") 
+        self.ent_silence.grid(row=8, column=1, pady=5, sticky=tk.EW)
+        
+        tk.Label(form, text="Max Class Duration (mins):").grid(row=9, column=0, sticky=tk.W, pady=5)
+        self.ent_max_dur = tk.Entry(form)
+        self.ent_max_dur.insert(0, "90")
+        self.ent_max_dur.grid(row=9, column=1, pady=5, sticky=tk.EW)
+        
+        tk.Label(form, text="Save Path:").grid(row=10, column=0, sticky=tk.W, pady=5)
+        self.save_path = tk.StringVar()
+        self.save_path.set(os.getcwd())
+        path_frame = tk.Frame(form)
+        path_frame.grid(row=10, column=1, sticky=tk.EW)
+        tk.Button(path_frame, text="Choose Dir", command=self.choose_dir).pack(side=tk.LEFT)
+        tk.Label(path_frame, textvariable=self.save_path, fg="blue").pack(side=tk.LEFT, padx=10)
+        
+        self.btn_save = tk.Button(form, text="Save Class", bg="#4caf50", fg="white", command=self.save_class)
+        self.btn_save.grid(row=11, columnspan=2, pady=20)
+        form.columnconfigure(1, weight=1)
 
-                self.ffmpeg_process = subprocess.Popen(
-                    cmd, 
-                    stdin=subprocess.PIPE, 
-                    stdout=subprocess.DEVNULL, 
-                    stderr=subprocess.DEVNULL,
-                    creationflags=subprocess.CREATE_NO_WINDOW
-                )
-               
-            if self.rec_audio or self.rec_video:
-                 self.recorded_audio_parts.append(current_audio)
 
-                 
-        except Exception as e:
-            app_logger.error(f"Failed to start FFmpeg recording: {e}")
+    def toggle_recording_settings(self):
 
-    def pause_recording(self):
-
-        if self.ffmpeg_process:
-            try:
-                 self.ffmpeg_process.communicate(b'q', timeout=5)
-            except subprocess.TimeoutExpired:
-                 self.ffmpeg_process.terminate()
-                 self.ffmpeg_process.wait()
-            self.ffmpeg_process = None
+        if not self.var_video.get() and not self.var_audio.get():
+            target_state = tk.DISABLED
+        else:
+            target_state = tk.NORMAL
             
-        self.is_paused = True
-        app_logger.info(f"Recording PAUSED (Silence > {self.pause_sec}s). Saving disk space.")
+        self.ent_pause.config(state=target_state)
+        self.ent_silence.config(state=target_state)
+        self.ent_max_dur.config(state=target_state)
 
-    def resume_recording(self):
-        self.part_num += 1
-        self.is_paused = False
-        app_logger.info("Sound detected! RESUMING recording in a new part.")
-        self.start_recording_part()
 
-    def capture_and_monitor(self):
-        if not (self.rec_audio or self.rec_video):
+    def choose_dir(self):
+        dir_path = filedialog.askdirectory()
+        if dir_path:
+            self.save_path.set(dir_path)
+
+    def save_class(self):
+
+        user_name_val = self.ent_user.get().strip()
+        if not user_name_val:
+            messagebox.showerror("Error", "User Name (or Guest Name) is required!")
             return
 
-        p = pya.PyAudio()
-        try:
-            wasapi_info = p.get_host_api_info_by_type(pya.paWASAPI)
-            default_speakers = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
-            target_device = None
-            if not default_speakers["isLoopbackDevice"]:
-                for loopback in p.get_loopback_device_info_generator():
-                    if default_speakers["name"] in loopback["name"]:
-                        target_device = loopback
-                        break
-                if not target_device:
-                    target_device = p.get_default_wasapi_loopback()
-            else:
-                target_device = default_speakers
-
-            device_index = target_device["index"]
-            channels = int(target_device["maxInputChannels"])
-            samplerate = int(target_device["defaultSampleRate"])
-
-            app_logger.info(f"Perfect Audio Capture Engine Initialized: {target_device['name']}")
-
-            silence_start = time.time()
-            threshold = 300  
-            wf = None 
+        class_name_val = self.ent_class.get().strip()
+        if not class_name_val:
+            messagebox.showerror("Error", "Class Name is required!")
+            return
             
-            stream = p.open(
-                format=pya.paInt16,
-                channels=channels,
-                rate=samplerate,
-                input=True,
-                input_device_index=device_index,
-                frames_per_buffer=4096
-            )
 
-            while self.is_running:
-                try:
-                    if self.class_start_time and (time.time() - self.class_start_time) >= (self.max_dur_min * 60):
-                        app_logger.info(f"Max class duration reached ({self.max_dur_min} mins). Forcing termination.")
-                        self.stop_all()
-                        break
+        class_link_val = self.ent_link.get().strip()
+        if not class_link_val:
+            messagebox.showerror("Error", "Class Link is required!")
+            return
 
-                    data = stream.read(4096, exception_on_overflow=False)
-                    audio_data = np.frombuffer(data, dtype=np.int16)
-                    volume = np.max(np.abs(audio_data)) if len(audio_data) > 0 else 0
-                    
-                    bar_length = min(int(volume / 500), 50)
-                    bars = "█" * bar_length
+        schedule_dict = {}
+        for day, (var, ent) in self.days_data.items():
+            if var.get():
+                schedule_dict[day] = ent.get().strip()
+                
+        if not schedule_dict:
+            messagebox.showerror("Error", "Please select at least one day and time!")
+            return
+            
+        schedule_dict["_settings"] = {
+            "pause_sec": self.ent_pause.get() or "60",
+            "max_dur": self.ent_max_dur.get() or "90",
+            "ignore_next": False
+        }
+        
+        schedule_json = json.dumps(schedule_dict)
+        
+        data = (
+            self.ent_user.get(),
+            self.ent_pass.get(),
+            self.ent_class.get(),
+            self.ent_link.get(),
+            schedule_json,
+            int(self.var_video.get()),
+            int(self.var_audio.get()),
+            self.save_path.get(),
+            int(self.ent_silence.get() or 15)
+        )
+        
+        if self.editing_id:
+            database.update_class(self.editing_id, data)
+            app_logger.info(f"Class updated successfully: {self.ent_class.get()}")
+            messagebox.showinfo("Success", "Class updated successfully!")
+            self.editing_id = None
+            self.btn_save.config(text="Save Class")
+        else:
+            database.add_class(data)
+            app_logger.info(f"New class added to database: {self.ent_class.get()}")
+            messagebox.showinfo("Success", "Class saved successfully!")
+            
+        self.ent_user.delete(0, tk.END)
+        self.ent_pass.delete(0, tk.END)
+        self.ent_class.delete(0, tk.END)
+        self.ent_link.delete(0, tk.END)
+        for var, ent in self.days_data.values():
+            var.set(False)
+            ent.delete(0, tk.END)
+            ent.insert(0, "08:00")
+            
+        self.refresh_list()
+        self.notebook.select(self.tab_list)
 
-                    if volume < threshold:
-                        if silence_start is None:
-                            silence_start = time.time()
-                        else:
-                            elapsed = time.time() - silence_start
-                            
-                            if not self.is_paused and elapsed >= self.pause_sec:
-                                self.pause_recording()
-                                if wf:
-                                    wf.close()
-                                    wf = None
-
-
-                            if elapsed >= 30:
-                                if time.time() - getattr(self, 'last_reload_time', 0) >= 20:
-                                    self.needs_reload = True
-                                    self.last_reload_time = time.time()
-
-                                    
-
-                            if elapsed >= (self.silence_timeout * 60):
-                                print(f"\n[ALERT] {self.silence_timeout} minutes of pure silence reached! Exiting...")
-                                app_logger.info("Total silence exit threshold reached.")
-                                self.stop_all()
-                                break
-                                
-                            if elapsed >= 10 and not self.is_paused:
-                                print(f"\r[Silence Timer: {elapsed:.1f}s] {bars}".ljust(75), end="", flush=True)
-                    else:
-                        if silence_start is not None:
-                            if self.is_paused:
-                                self.resume_recording()
-
-                                current_audio = self.recorded_audio_parts[-1]
-                                wf = wave.open(current_audio, 'wb')
-                                wf.setnchannels(channels)
-                                wf.setsampwidth(p.get_sample_size(pya.paInt16))
-                                wf.setframerate(samplerate)
-                            elif (time.time() - silence_start) >= 10:
-                                print("\n[INFO] Sound detected! Silence timer reset.")
-                        silence_start = None
-                        
-                        if not self.is_paused:
-                            print(f"\r[Class Audio: {volume}] {bars}".ljust(75), end="", flush=True)
-                            
-                    if not self.is_paused and wf:
-                         wf.writeframes(data)
-
-                except Exception as read_exc:
-                    time.sleep(0.1)
-
-            stream.stop_stream()
-            stream.close()
-            if wf:
-                 wf.close()
-
-        except Exception as e:
-            app_logger.error(f"Unified capture failed: {e}")
-        finally:
-            p.terminate()
-
-    def merge_recorded_parts(self):
-
-        final_video = None
-        if self.rec_video and self.recorded_video_parts:
-            if len(self.recorded_video_parts) == 1:
-                final_video = self.video_temp
-                if os.path.exists(self.recorded_video_parts[0]):
-                    os.rename(self.recorded_video_parts[0], final_video)
+    def edit_selected(self):
+        selected = self.tree.focus()
+        if not selected:
+            messagebox.showwarning("Warning", "Please select a class to edit.")
+            return
+            
+        item_id = self.tree.item(selected)['values'][0]
+        classes = database.get_classes()
+        target = next((c for c in classes if c[0] == item_id), None)
+        if not target: return
+        
+        self.editing_id = item_id
+        self.ent_user.delete(0, tk.END); self.ent_user.insert(0, target[1] or "")
+        self.ent_pass.delete(0, tk.END); self.ent_pass.insert(0, target[2] or "")
+        self.ent_class.delete(0, tk.END); self.ent_class.insert(0, target[3])
+        self.ent_link.delete(0, tk.END); self.ent_link.insert(0, target[4])
+        
+        try:
+            schedule_dict = json.loads(target[5])
+        except:
+            schedule_dict = {}
+            
+        for day, (var, ent) in self.days_data.items():
+            if day in schedule_dict and not day.startswith("_"):
+                var.set(True)
+                ent.delete(0, tk.END)
+                ent.insert(0, schedule_dict[day])
             else:
-                app_logger.info(f"Merging {len(self.recorded_video_parts)} video parts...")
-                concat_file = f"{self.base_filename}_vconcat.txt"
-                final_video = self.video_temp
-                try:
-                    with open(concat_file, "w") as f:
-                        for part in self.recorded_video_parts:
-                            if os.path.exists(part):
-                                f.write(f"file '{os.path.basename(part)}'\n")
-                                
-                    merge_cmd = [self.ffmpeg_path, "-y", "-f", "concat", "-safe", "0", "-i", concat_file, "-c", "copy", final_video]
-                    subprocess.run(
-                        merge_cmd, 
-                        stdout=subprocess.DEVNULL, 
-                        stderr=subprocess.DEVNULL,
-                        creationflags=subprocess.CREATE_NO_WINDOW
-                    )
+                var.set(False)
+                ent.delete(0, tk.END); ent.insert(0, "08:00")
+                
+        settings = schedule_dict.get("_settings", {})
+        self.ent_pause.delete(0, tk.END); self.ent_pause.insert(0, settings.get("pause_sec", "60"))
+        self.ent_max_dur.delete(0, tk.END); self.ent_max_dur.insert(0, settings.get("max_dur", "90"))
+        
+        self.var_video.set(bool(target[6]))
+        self.var_audio.set(bool(target[7]))
+        self.save_path.set(target[8])
+        self.ent_silence.delete(0, tk.END); self.ent_silence.insert(0, str(target[9]))
+        
+        self.btn_save.config(text="Update Class")
+        self.notebook.select(self.tab_add)
+        self.toggle_recording_settings() 
 
-                    os.remove(concat_file)
-                    for part in self.recorded_video_parts:
-                        if os.path.exists(part): os.remove(part)
+    def on_tree_select(self, event=None):
+        selected = self.tree.focus()
+        if not selected:
+            self.btn_ignore.config(state=tk.DISABLED, text="⏸ Ignore Next Session", bg="#607d8b")
+            return
+            
+        self.btn_ignore.config(state=tk.NORMAL)
+        item_id = self.tree.item(selected)['values'][0]
+        
+        classes = database.get_classes()
+        target = next((c for c in classes if c[0] == item_id), None)
+        if target:
+            try:
+                settings = json.loads(target[5]).get("_settings", {})
+                is_ignored = settings.get("ignore_next", False)
+                if is_ignored:
+                    self.btn_ignore.config(text="▶ Restore Next Session", bg="#4caf50")
+                else:
+                    self.btn_ignore.config(text="⏸ Ignore Next Session", bg="#607d8b")
+            except:
+                self.btn_ignore.config(text="⏸ Ignore Next Session", bg="#607d8b")
+
+    def toggle_ignore_next(self):
+        selected = self.tree.focus()
+        if not selected: return
+        item_id = self.tree.item(selected)['values'][0]
+        
+        classes = database.get_classes()
+        target = next((c for c in classes if c[0] == item_id), None)
+        if not target: return
+        
+        try:
+            sched = json.loads(target[5])
+        except:
+            sched = {}
+            
+        settings = sched.get("_settings", {})
+        current_state = settings.get("ignore_next", False)
+        new_state = not current_state  
+        
+        settings["ignore_next"] = new_state
+        sched["_settings"] = settings
+        
+        data = (target[1], target[2], target[3], target[4], json.dumps(sched), target[6], target[7], target[8], target[9])
+        database.update_class(item_id, data)
+        
+        state_str = "IGNORED" if new_state else "RESTORED"
+        app_logger.info(f"Class '{target[3]}' next session is now {state_str}.")
+        
+        self.refresh_list()
+        self.on_tree_select(None) 
+
+    def refresh_list(self):
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+        for index, row in enumerate(database.get_classes(), start=1):
+            try:
+                sd = json.loads(row[5])
+                sched_str = ", ".join([f"{k[:3]} {v}" for k, v in sd.items() if not k.startswith("_")])
+                
+                settings = sd.get("_settings", {})
+                display_name = f"🚫 {row[3]} (Skip Next)" if settings.get("ignore_next", False) else row[3]
+            except:
+                sched_str = "Error reading schedule"
+                display_name = row[3]
+            
+            mode_list = []
+            if row[6]: mode_list.append("Video")
+            if row[7]: mode_list.append("Audio")
+            mode_str = " + ".join(mode_list) if mode_list else "None"
+            self.tree.insert("", tk.END, values=(row[0], index, row[1] or "Guest", display_name, sched_str, mode_str))
+
+    def delete_selected(self):
+        selected = self.tree.focus()
+        if not selected: return
+        if messagebox.askyesno("Confirm Delete", "Are you sure you want to delete this class?"):
+            item_id = self.tree.item(selected)['values'][0]
+            database.delete_class(item_id)
+            self.refresh_list()
+            self.on_tree_select(None)
+
+    def join_now(self):
+        selected = self.tree.focus()
+        if not selected:
+            messagebox.showwarning("Warning", "Please select a class from the list.")
+            return
+        item_id = self.tree.item(selected)['values'][0]
+        classes = database.get_classes()
+        target = next((c for c in classes if c[0] == item_id), None)
+        if not target: return
+        
+        if messagebox.askyesno("Join Now", f"Start '{target[3]}' immediately?"):
+            app_logger.info(f"Manual join requested for class: {target[3]}")
+            bot = SkyroomClassBot(target)
+            self.active_bots.append(bot)
+            threading.Thread(target=bot.start, daemon=True).start()
+    def scheduler_thread(self):
+        app_logger.info("Background scheduler thread started successfully.")
+        while True:
+            now = datetime.datetime.now()
+            current_time = now.strftime("%H:%M")
+            current_day = now.strftime("%A") 
+            
+            classes = database.get_classes()
+            for cls in classes:
+                try:
+                    schedule_dict = json.loads(cls[5])
+                    if current_day in schedule_dict and schedule_dict[current_day] == current_time:
+                        
+                        settings = schedule_dict.get("_settings", {})
+                        if settings.get("ignore_next", False):
+                            app_logger.info(f"Skipping scheduled session for '{cls[3]}' (Ignore Next active). Resetting flag for future sessions.")
+                            settings["ignore_next"] = False
+                            schedule_dict["_settings"] = settings
+                            
+                            data = (cls[1], cls[2], cls[3], cls[4], json.dumps(schedule_dict), cls[6], cls[7], cls[8], cls[9])
+                            database.update_class(cls[0], data)
+                            self.root.after(0, self.refresh_list) 
+                            
+                            time.sleep(60)
+                            continue
+                            
+                        app_logger.info(f"Schedule matched! Initializing bot for class: {cls[3]}")
+                        bot = SkyroomClassBot(cls)
+                        self.active_bots.append(bot)
+                        bot.start()
+                        time.sleep(60) 
                 except Exception as e:
-                    app_logger.error(f"Failed to merge video parts: {e}")
-                    
-
-        final_audio = None
-        if (self.rec_video or self.rec_audio) and self.recorded_audio_parts:
-             if len(self.recorded_audio_parts) == 1:
-                  final_audio = self.audio_temp
-                  if os.path.exists(self.recorded_audio_parts[0]):
-                       os.rename(self.recorded_audio_parts[0], final_audio)
-             else:
-                  app_logger.info(f"Merging {len(self.recorded_audio_parts)} audio parts...")
-
-                  final_audio = self.audio_temp
-                  try:
-                      out_wav = wave.open(final_audio, 'wb')
-                      in_wav_params = None
-                      for part in self.recorded_audio_parts:
-                           if os.path.exists(part):
-                                in_wav = wave.open(part, 'rb')
-                                if not in_wav_params:
-                                     in_wav_params = in_wav.getparams()
-                                     out_wav.setparams(in_wav_params)
-                                out_wav.writeframes(in_wav.readframes(in_wav.getnframes()))
-                                in_wav.close()
-                                os.remove(part)
-                      out_wav.close()
-                  except Exception as e:
-                      app_logger.error(f"Failed to merge audio parts: {e}")
-                      
-        return final_video, final_audio
-
-    def stop_all(self):
-        if not self.is_running: return
-        self.is_running = False
-        
-        if self.ffmpeg_process:
-            app_logger.info("Saving video file. Please wait...")
-            try:
-                self.ffmpeg_process.communicate(b'q', timeout=15)
-            except subprocess.TimeoutExpired:
-                self.ffmpeg_process.terminate()
-                self.ffmpeg_process.wait()
-            self.ffmpeg_process = None
-            
-        final_vid_temp, final_aud_temp = self.merge_recorded_parts()
-            
-        if self.rec_video and self.rec_audio and final_vid_temp and final_aud_temp:
-            app_logger.info("Merging perfect audio and video into final MP4... Please wait!")
-            final_mp4 = f"{self.base_filename}.mp4"
-            cmd = [
-                self.ffmpeg_path, "-y", 
-                "-i", final_vid_temp, 
-                "-i", final_aud_temp, 
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "32k", final_mp4 
-            ]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
-            app_logger.info(f"Final class recording saved: {final_mp4}")
-            
-            try:
-                os.remove(final_vid_temp)
-                os.remove(final_aud_temp)
-            except: pass
-            
-
-            app_logger.info("Extracting MP3 from the final MP4...")
-            mp3_file = f"{self.base_filename}.mp3"
-            extract_cmd = [self.ffmpeg_path, "-y", "-i", final_mp4, "-c:a", "libmp3lame", "-ab", "32k", "-ac", "1", "-ar", "44100", "-vn", mp3_file]
-            subprocess.run(extract_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            app_logger.info("Audio extraction completed.")
-            
-        elif self.rec_video and final_vid_temp:
-             os.rename(final_vid_temp, f"{self.base_filename}.mp4")
-             app_logger.info(f"Final video saved: {self.base_filename}.mp4")
-             
-        elif self.rec_audio and final_aud_temp:
-            app_logger.info("Converting WAV to final MP3...")
-            final_mp3 = f"{self.base_filename}.mp3"
-            cmd = [
-                self.ffmpeg_path, "-y", "-i", final_aud_temp, "-c:a", "libmp3lame", "-ab", "32k", "-ac", "1", "-ar", "44100", final_mp3
-            ]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
-            app_logger.info(f"Final audio saved: {final_mp3}")
-            
-            try:
-                os.remove(final_aud_temp)
-            except: pass
-
-    def perform_login(self):
-        try:
-            wait = WebDriverWait(self.driver, 20)
-            
-            if self.user_name and self.password:
-                user_input = wait.until(EC.presence_of_element_located((By.ID, "username")))
-                user_input.clear()
-                user_input.send_keys(self.user_name)
-                
-                pass_input = self.driver.find_element(By.ID, "password")
-                pass_input.clear()
-                pass_input.send_keys(self.password)
-                
-                self.driver.find_element(By.ID, "btn_login").click()
-                app_logger.info("Logged in with credentials.")
-                
-
-            elif self.user_name and not self.password:
-
-                wait.until(EC.element_to_be_clickable((By.ID, "btn_guest"))).click()
-                
-
-                guest_name_input = wait.until(EC.presence_of_element_located(
-                    (By.CSS_SELECTOR, ".dialog-content input.full-width")
-                ))
-                guest_name_input.clear()
-                guest_name_input.send_keys(self.user_name)
-                
-
-                submit_guest_btn = wait.until(EC.element_to_be_clickable(
-                    (By.CSS_SELECTOR, ".dialog-footer button.btn")
-                ))
-                submit_guest_btn.click()
-                
-                app_logger.info(f"Successfully logged in as GUEST with name: {self.user_name}")
-                
-
-            else:
-                app_logger.error("Username is required but was not provided. Cannot join class.")
-                self.stop_all()
-
-        except Exception as e:
-            app_logger.error(f"Login timeout or error: {e}")
+                    app_logger.error(f"Error in scheduler loop: {e}", exc_info=True)
+            time.sleep(30)
 
 
-    def run_browser(self):
-        app_logger.info("Launching browser: CHROME")
-        
-        try:
-            from selenium.webdriver.chrome.options import Options as ChromeOptions
-            chrome_options = ChromeOptions()
 
-            chrome_options.add_argument("--disable-notifications")
-            
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-            
-            driver_path = os.path.join("bin", "chromedriver.exe")
-            if os.path.exists(driver_path):
-                from selenium.webdriver.chrome.service import Service as ChromeService
-                service = ChromeService(executable_path=driver_path)
-                self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            else:
-                self.driver = webdriver.Chrome(options=chrome_options)
-                
-            self.driver.maximize_window()
-            app_logger.info("Browser maximized.")
-            
-            self.driver.get(self.link)
-            wait = WebDriverWait(self.driver, 20)
-            
-            self.driver.get(self.link)
-            
-            self.perform_login()
-            
-            while self.is_running:
-                try:
-                    _ = self.driver.window_handles
-                    
-                    if getattr(self, 'needs_reload', False):
-                        app_logger.info("Silence > 30s. Auto-reloading and re-joining Skyroom...")
-                        self.driver.get(self.link)  
-                        time.sleep(3) 
-                        self.perform_login() 
-                        self.needs_reload = False
-                        
-                except Exception:
-                    app_logger.info("Browser window was closed manually. Saving recordings...")
-                    self.stop_all()
-                    break
-                
-                time.sleep(1)
-                
-        except Exception as e:
-            app_logger.error(f"Browser error: {e}")
-            self.stop_all()
-        finally:
-            if self.driver:
-                try: self.driver.quit()
-                except: pass
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = SkyroomGUI(root)
+    root.mainloop()
