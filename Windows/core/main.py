@@ -29,7 +29,6 @@ class SkyroomGUI:
         self.tab_list = ttk.Frame(self.notebook)
         self.tab_add = ttk.Frame(self.notebook)
         
-        # تب تنظیمات (Settings) بر اساس درخواست حذف شد
         self.notebook.add(self.tab_list, text="Class List")
         self.notebook.add(self.tab_add, text="Add / Edit Class")
         
@@ -41,7 +40,6 @@ class SkyroomGUI:
 
 
     def on_closing(self):
-        # بررسی اینکه آیا رباتی در حال اجراست یا خیر
         running_bots = [bot for bot in self.active_bots if bot.is_running]
         
         if running_bots:
@@ -51,17 +49,14 @@ class SkyroomGUI:
                 
         app_logger.info("GUI closed by user. Initiating background save...")
         
-        # تابعی که در پس‌زمینه اجرا می‌شود تا ویدیوها را رندر کند
         def background_save():
             for bot in running_bots:
                 bot.stop_all()
         
-        # اجرای ترد به صورت daemon=False تا ترمینال بسته نشود
         if running_bots:
             save_thread = threading.Thread(target=background_save, daemon=False)
             save_thread.start()
             
-        # از بین بردن پنجره گرافیکی
         self.root.destroy()
 
     def build_list_tab(self):
@@ -88,7 +83,6 @@ class SkyroomGUI:
         
         tk.Button(btn_frame, text="▶ Join Class Now", bg="#ff9800", fg="black", font=("Arial", 9, "bold"), command=self.join_now).pack(side=tk.LEFT, padx=5)
         
-        # دکمه هوشمند برای لغو فقط جلسه بعدی
         self.btn_ignore = tk.Button(btn_frame, text="⏸ Ignore Next Session", bg="#607d8b", fg="white", font=("Arial", 9, "bold"), command=self.toggle_ignore_next)
         self.btn_ignore.pack(side=tk.LEFT, padx=5)
         self.btn_ignore.config(state=tk.DISABLED) # غیرفعال تا زمانی که ردیفی انتخاب شود
@@ -97,7 +91,6 @@ class SkyroomGUI:
         tk.Button(btn_frame, text="Edit Class", bg="#2196F3", fg="white", command=self.edit_selected).pack(side=tk.RIGHT, padx=5)
         tk.Button(btn_frame, text="Refresh List", command=self.refresh_list).pack(side=tk.RIGHT, padx=5)
         
-        # بایند کردن کلیک روی لیست برای تغییر وضعیت دکمه Ignore
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
         self.refresh_list()
 
@@ -105,7 +98,7 @@ class SkyroomGUI:
         form = tk.Frame(self.tab_add)
         form.pack(pady=20, padx=20, fill=tk.BOTH)
         
-        tk.Label(form, text="User Name (Optional):").grid(row=0, column=0, sticky=tk.W, pady=5)
+        tk.Label(form, text="User Name / Guest Name (Required):").grid(row=0, column=0, sticky=tk.W, pady=5)
         self.ent_user = tk.Entry(form)
         self.ent_user.grid(row=0, column=1, pady=5, sticky=tk.EW)
         
@@ -113,14 +106,14 @@ class SkyroomGUI:
         self.ent_pass = tk.Entry(form, show="*")
         self.ent_pass.grid(row=1, column=1, pady=5, sticky=tk.EW)
         
-        help_lbl = tk.Label(form, text="* Note: If left blank, bot will join as GUEST.", fg="gray", font=("Arial", 9, "italic"))
+        help_lbl = tk.Label(form, text="* Note: Leave Password blank to join as GUEST.", fg="gray", font=("Arial", 9, "italic"))
         help_lbl.grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(0, 15))
         
-        tk.Label(form, text="Class Name:").grid(row=3, column=0, sticky=tk.W, pady=5)
+        tk.Label(form, text="Class Name (Required):").grid(row=3, column=0, sticky=tk.W, pady=5)
         self.ent_class = tk.Entry(form)
         self.ent_class.grid(row=3, column=1, pady=5, sticky=tk.EW)
         
-        tk.Label(form, text="Class Link:").grid(row=4, column=0, sticky=tk.W, pady=5)
+        tk.Label(form, text="Class Link (Required):").grid(row=4, column=0, sticky=tk.W, pady=5)
         self.ent_link = tk.Entry(form)
         self.ent_link.grid(row=4, column=1, pady=5, sticky=tk.EW)
         
@@ -147,8 +140,8 @@ class SkyroomGUI:
         mode_frame.grid(row=6, column=1, sticky=tk.W, pady=10)
         self.var_video = tk.BooleanVar(value=True)
         self.var_audio = tk.BooleanVar(value=True)
-        tk.Checkbutton(mode_frame, text="Record Video", variable=self.var_video).pack(side=tk.LEFT, padx=5)
-        tk.Checkbutton(mode_frame, text="Record Audio", variable=self.var_audio).pack(side=tk.LEFT, padx=5)
+        tk.Checkbutton(mode_frame, text="Record Video", variable=self.var_video, command=self.toggle_recording_settings).pack(side=tk.LEFT, padx=5)
+        tk.Checkbutton(mode_frame, text="Record Audio", variable=self.var_audio, command=self.toggle_recording_settings).pack(side=tk.LEFT, padx=5)
         
         tk.Label(form, text="Pause record if silence (sec):").grid(row=7, column=0, sticky=tk.W, pady=5)
         self.ent_pause = tk.Entry(form)
@@ -177,12 +170,42 @@ class SkyroomGUI:
         self.btn_save.grid(row=11, columnspan=2, pady=20)
         form.columnconfigure(1, weight=1)
 
+
+    def toggle_recording_settings(self):
+
+        if not self.var_video.get() and not self.var_audio.get():
+            target_state = tk.DISABLED
+        else:
+            target_state = tk.NORMAL
+            
+        self.ent_pause.config(state=target_state)
+        self.ent_silence.config(state=target_state)
+        self.ent_max_dur.config(state=target_state)
+
+
     def choose_dir(self):
         dir_path = filedialog.askdirectory()
         if dir_path:
             self.save_path.set(dir_path)
 
     def save_class(self):
+
+        user_name_val = self.ent_user.get().strip()
+        if not user_name_val:
+            messagebox.showerror("Error", "User Name (or Guest Name) is required!")
+            return
+
+        class_name_val = self.ent_class.get().strip()
+        if not class_name_val:
+            messagebox.showerror("Error", "Class Name is required!")
+            return
+            
+
+        class_link_val = self.ent_link.get().strip()
+        if not class_link_val:
+            messagebox.showerror("Error", "Class Link is required!")
+            return
+
         schedule_dict = {}
         for day, (var, ent) in self.days_data.items():
             if var.get():
@@ -223,7 +246,6 @@ class SkyroomGUI:
             app_logger.info(f"New class added to database: {self.ent_class.get()}")
             messagebox.showinfo("Success", "Class saved successfully!")
             
-        # پاک کردن فرم بعد از ذخیره
         self.ent_user.delete(0, tk.END)
         self.ent_pass.delete(0, tk.END)
         self.ent_class.delete(0, tk.END)
@@ -278,6 +300,7 @@ class SkyroomGUI:
         
         self.btn_save.config(text="Update Class")
         self.notebook.select(self.tab_add)
+        self.toggle_recording_settings() 
 
     def on_tree_select(self, event=None):
         selected = self.tree.focus()
