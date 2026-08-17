@@ -7,6 +7,7 @@ import ctypes
 import numpy as np
 import pyaudiowpatch as pya
 import wave
+import glob
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -28,6 +29,7 @@ class SkyroomClassBot:
         self.is_running = True
         self.driver = None
         self.ffmpeg_process = None
+        self._audio_stream = None
         
         self.id, self.user_name, self.password, self.class_name, self.link, \
         self.schedule_json, self.rec_video, self.rec_audio, self.save_path, self.silence_timeout = self.class_data
@@ -44,13 +46,11 @@ class SkyroomClassBot:
         timestamp = time.strftime("%Y%m%d_%H%M")
         self.base_filename = os.path.join(self.save_path, f"{self.class_name}_{timestamp}")
         
-
         self.video_temp = f"{self.base_filename}_temp.mp4"
         self.audio_temp = f"{self.base_filename}_temp.wav"
         
         self.ffmpeg_path = os.path.join("bin", "ffmpeg.exe") if os.path.exists(os.path.join("bin", "ffmpeg.exe")) else "ffmpeg"
         
-
         self.is_paused = True 
         self.class_start_time = None
         self.recorded_video_parts = []
@@ -58,32 +58,74 @@ class SkyroomClassBot:
         self.part_num = 0
         self.last_reload_time = 0
         self.needs_reload = False
+        self.audio_capture_finished = threading.Event()
+
+        self.stop_lock = threading.Lock()
+        self._already_stopped = False
 
     def start(self):
         app_logger.info(f"Starting class session: {self.class_name}. Waiting for the first sound to begin recording...")
         self.class_start_time = time.time()
         
+        self.browser_thread = threading.Thread(target=self.run_browser)
+        self.browser_thread.start()
+      
+        for _ in range(15):
+            if not self.is_running:
+                return
+            time.sleep(1)
+            
+        self.capture_thread = threading.Thread(target=self.capture_and_monitor)
+        self.capture_thread.start()
 
-        threading.Thread(target=self.run_browser).start()
-        
-        time.sleep(15)
-
-        threading.Thread(target=self.capture_and_monitor).start()
+     
 
     def start_recording_part(self):
-
         try:
             current_video = f"{self.video_temp}_part{self.part_num:03d}.mp4"
             current_audio = f"{self.audio_temp}_part{self.part_num:03d}.wav"
             
             if self.rec_video:
                 self.recorded_video_parts.append(current_video)
-                resolution = get_screen_resolution()
-                app_logger.info(f"Recording Windows screen [Part {self.part_num}] started (Video Only).")
-                cmd = [
-                    self.ffmpeg_path, "-y", "-f", "gdigrab", "-framerate", "15", "-video_size", resolution, "-i", "desktop",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "34", current_video
-                ]
+                
+                exact_title = None
+                if hasattr(self, 'driver') and self.driver:
+                    self.unique_title_marker = f"SKYREC_{self.part_num}_{int(time.time())}"
+                    try:
+                        js_code = f"""
+                        document.title = '{self.unique_title_marker}';
+                        setInterval(function(){{ document.title = '{self.unique_title_marker}'; }}, 1000);
+                        """
+                        self.driver.execute_script(js_code)
+                        
+                        for _ in range(10):
+                            exact_title = self._find_window_by_substring(self.unique_title_marker)
+                            if exact_title:
+                                break
+                            time.sleep(0.5)
+                    except Exception as e:
+                        app_logger.debug(f"Title injection failed: {e}")
+
+                if exact_title:
+                    app_logger.info(f"Targeting SPECIFIC window [Part {self.part_num}]: {exact_title}")
+                    cmd = [
+                        self.ffmpeg_path, "-y", 
+                        "-f", "gdigrab", "-framerate", "15", 
+                        "-draw_mouse", "0",  
+                        "-i", f"title={exact_title}",  !
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "34", current_video
+                    ]
+                else:
+                    app_logger.warning("Could not lock onto window, falling back to full screen!")
+                    resolution = get_screen_resolution()
+                    cmd = [
+                        self.ffmpeg_path, "-y", 
+                        "-f", "gdigrab", "-framerate", "15", 
+                        "-draw_mouse", "0", 
+                        "-video_size", resolution, 
+                        "-i", "desktop",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "34", current_video
+                    ]
 
                 self.ffmpeg_process = subprocess.Popen(
                     cmd, 
@@ -95,23 +137,27 @@ class SkyroomClassBot:
                
             if self.rec_audio or self.rec_video:
                  self.recorded_audio_parts.append(current_audio)
-
                  
         except Exception as e:
             app_logger.error(f"Failed to start FFmpeg recording: {e}")
 
-    def pause_recording(self):
 
+    def pause_recording(self):
+        if self.is_paused:
+            return
+        
+        self.is_paused = True
+        app_logger.info("Silence detected. PAUSING recording (stopping current part)...")
+        
+        # متوقف کردن امن ضبط ویدیو برای این پارت
         if self.ffmpeg_process:
             try:
-                 self.ffmpeg_process.communicate(b'q', timeout=5)
+                self.ffmpeg_process.communicate(b'q', timeout=10)
             except subprocess.TimeoutExpired:
-                 self.ffmpeg_process.terminate()
-                 self.ffmpeg_process.wait()
+                self.ffmpeg_process.terminate()
+                self.ffmpeg_process.wait()
             self.ffmpeg_process = None
-            
-        self.is_paused = True
-        app_logger.info(f"Recording PAUSED (Silence > {self.pause_sec}s). Saving disk space.")
+
 
     def resume_recording(self):
         self.part_num += 1
@@ -124,6 +170,8 @@ class SkyroomClassBot:
             return
 
         p = pya.PyAudio()
+        self._audio_stream = None
+        wf = None
         try:
             wasapi_info = p.get_host_api_info_by_type(pya.paWASAPI)
             default_speakers = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
@@ -145,10 +193,9 @@ class SkyroomClassBot:
             app_logger.info(f"Perfect Audio Capture Engine Initialized: {target_device['name']}")
 
             silence_start = time.time()
-            threshold = 300  
-            wf = None 
+            threshold = 10  
             
-            stream = p.open(
+            self._audio_stream = p.open(
                 format=pya.paInt16,
                 channels=channels,
                 rate=samplerate,
@@ -164,7 +211,7 @@ class SkyroomClassBot:
                         self.stop_all()
                         break
 
-                    data = stream.read(4096, exception_on_overflow=False)
+                    data = self._audio_stream.read(4096, exception_on_overflow=False)
                     audio_data = np.frombuffer(data, dtype=np.int16)
                     volume = np.max(np.abs(audio_data)) if len(audio_data) > 0 else 0
                     
@@ -183,13 +230,10 @@ class SkyroomClassBot:
                                     wf.close()
                                     wf = None
 
-
                             if elapsed >= 30:
                                 if time.time() - getattr(self, 'last_reload_time', 0) >= 20:
                                     self.needs_reload = True
                                     self.last_reload_time = time.time()
-
-                                    
 
                             if elapsed >= (self.silence_timeout * 60):
                                 print(f"\n[ALERT] {self.silence_timeout} minutes of pure silence reached! Exiting...")
@@ -222,24 +266,35 @@ class SkyroomClassBot:
                 except Exception as read_exc:
                     time.sleep(0.1)
 
-            stream.stop_stream()
-            stream.close()
-            if wf:
-                 wf.close()
-
         except Exception as e:
             app_logger.error(f"Unified capture failed: {e}")
+            
         finally:
+            if self._audio_stream and self._audio_stream.is_active():
+                try: self._audio_stream.stop_stream()
+                except: pass
+                try: self._audio_stream.close()
+                except: pass
+                
+            if wf:
+                try: wf.close()
+                except: pass
+                
+            self.audio_capture_finished.set()
             p.terminate()
 
     def merge_recorded_parts(self):
-
+        import shutil
         final_video = None
         if self.rec_video and self.recorded_video_parts:
             if len(self.recorded_video_parts) == 1:
                 final_video = self.video_temp
                 if os.path.exists(self.recorded_video_parts[0]):
-                    os.rename(self.recorded_video_parts[0], final_video)
+                    try:
+                        shutil.move(self.recorded_video_parts[0], final_video)
+                    except Exception as e:
+                        app_logger.error(f"Rename error (video): {e}")
+                        final_video = self.recorded_video_parts[0]
             else:
                 app_logger.info(f"Merging {len(self.recorded_video_parts)} video parts...")
                 concat_file = f"{self.base_filename}_vconcat.txt"
@@ -257,10 +312,6 @@ class SkyroomClassBot:
                         stderr=subprocess.DEVNULL,
                         creationflags=subprocess.CREATE_NO_WINDOW
                     )
-
-                    os.remove(concat_file)
-                    for part in self.recorded_video_parts:
-                        if os.path.exists(part): os.remove(part)
                 except Exception as e:
                     app_logger.error(f"Failed to merge video parts: {e}")
                     
@@ -270,10 +321,13 @@ class SkyroomClassBot:
              if len(self.recorded_audio_parts) == 1:
                   final_audio = self.audio_temp
                   if os.path.exists(self.recorded_audio_parts[0]):
-                       os.rename(self.recorded_audio_parts[0], final_audio)
+                       try:
+                           shutil.move(self.recorded_audio_parts[0], final_audio)
+                       except Exception as e:
+                           app_logger.error(f"Rename error (audio): {e}")
+                           final_audio = self.recorded_audio_parts[0]
              else:
                   app_logger.info(f"Merging {len(self.recorded_audio_parts)} audio parts...")
-
                   final_audio = self.audio_temp
                   try:
                       out_wav = wave.open(final_audio, 'wb')
@@ -286,7 +340,6 @@ class SkyroomClassBot:
                                      out_wav.setparams(in_wav_params)
                                 out_wav.writeframes(in_wav.readframes(in_wav.getnframes()))
                                 in_wav.close()
-                                os.remove(part)
                       out_wav.close()
                   except Exception as e:
                       app_logger.error(f"Failed to merge audio parts: {e}")
@@ -294,60 +347,128 @@ class SkyroomClassBot:
         return final_video, final_audio
 
     def stop_all(self):
-        if not self.is_running: return
-        self.is_running = False
+        import shutil
+        import glob
         
-        if self.ffmpeg_process:
-            app_logger.info("Saving video file. Please wait...")
+        with self.stop_lock:
+            if getattr(self, '_already_stopped', False): 
+                return
+            self._already_stopped = True
+            self.is_running = False
+            
+            if hasattr(self, '_audio_stream') and self._audio_stream:
+                try:
+                    self._audio_stream.stop_stream()
+                except: pass
+            
+            if hasattr(self, 'driver') and self.driver:
+                try:
+                    self.driver.quit()
+                    self.driver = None
+                except: pass
+            
+            if self.ffmpeg_process:
+                app_logger.info("Saving video file. Please wait...")
+                try:
+                    self.ffmpeg_process.communicate(b'q', timeout=15)
+                except subprocess.TimeoutExpired:
+                    self.ffmpeg_process.terminate()
+                    self.ffmpeg_process.wait()
+                self.ffmpeg_process = None
+                
+            if hasattr(self, 'capture_thread') and self.capture_thread.is_alive():
+                if threading.current_thread() != self.capture_thread:
+                    self.audio_capture_finished.wait(timeout=15)
+                    
+            time.sleep(1.5)
+            
             try:
-                self.ffmpeg_process.communicate(b'q', timeout=15)
-            except subprocess.TimeoutExpired:
-                self.ffmpeg_process.terminate()
-                self.ffmpeg_process.wait()
-            self.ffmpeg_process = None
-            
-        final_vid_temp, final_aud_temp = self.merge_recorded_parts()
-            
-        if self.rec_video and self.rec_audio and final_vid_temp and final_aud_temp:
-            app_logger.info("Merging perfect audio and video into final MP4... Please wait!")
-            final_mp4 = f"{self.base_filename}.mp4"
-            cmd = [
-                self.ffmpeg_path, "-y", 
-                "-i", final_vid_temp, 
-                "-i", final_aud_temp, 
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "32k", final_mp4 
-            ]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
-            app_logger.info(f"Final class recording saved: {final_mp4}")
-            
-            try:
-                os.remove(final_vid_temp)
-                os.remove(final_aud_temp)
-            except: pass
-            
+                final_vid_temp, final_aud_temp = self.merge_recorded_parts()
+            except Exception as e:
+                app_logger.error(f"Merge parts failed: {e}")
+                final_vid_temp, final_aud_temp = None, None
+                
+            if self.rec_video and self.rec_audio and final_vid_temp and final_aud_temp:
+                app_logger.info("Merging perfect audio and video into final MP4... Please wait!")
+                final_mp4 = f"{self.base_filename}.mp4"
+                cmd = [
+                    self.ffmpeg_path, "-y", 
+                    "-i", final_vid_temp, 
+                    "-i", final_aud_temp, 
+                    "-c:v", "copy", "-c:a", "aac", "-b:a", "32k", final_mp4
+                ]
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+                
+                app_logger.info("Extracting MP3 from the final MP4...")
+                mp3_file = f"{self.base_filename}.mp3"
+                extract_cmd = [self.ffmpeg_path, "-y", "-i", final_mp4, "-c:a", "libmp3lame", "-ab", "32k", "-ac", "1", "-ar", "44100", "-vn", mp3_file]
+                subprocess.run(extract_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+                
+            elif self.rec_video and final_vid_temp:
+                try: shutil.move(final_vid_temp, f"{self.base_filename}.mp4")
+                except: pass
+                 
+            elif self.rec_audio and final_aud_temp:
+                app_logger.info("Converting WAV to final MP3...")
+                final_mp3 = f"{self.base_filename}.mp3"
+                cmd = [
+                    self.ffmpeg_path, "-y", "-i", final_aud_temp, "-c:a", "libmp3lame", "-ab", "32k", "-ac", "1", "-ar", "44100", final_mp3
+                ]
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
 
-            app_logger.info("Extracting MP3 from the final MP4...")
-            mp3_file = f"{self.base_filename}.mp3"
-            extract_cmd = [self.ffmpeg_path, "-y", "-i", final_mp4, "-c:a", "libmp3lame", "-ab", "32k", "-ac", "1", "-ar", "44100", "-vn", mp3_file]
-            subprocess.run(extract_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            app_logger.info("Audio extraction completed.")
+            app_logger.info("Cleaning up temporary files...")
+            time.sleep(1.5) 
             
-        elif self.rec_video and final_vid_temp:
-             os.rename(final_vid_temp, f"{self.base_filename}.mp4")
-             app_logger.info(f"Final video saved: {self.base_filename}.mp4")
-             
-        elif self.rec_audio and final_aud_temp:
-            app_logger.info("Converting WAV to final MP3...")
-            final_mp3 = f"{self.base_filename}.mp3"
-            cmd = [
-                self.ffmpeg_path, "-y", "-i", final_aud_temp, "-c:a", "libmp3lame", "-ab", "32k", "-ac", "1", "-ar", "44100", final_mp3
+            temp_files_to_delete = [
+                self.video_temp, 
+                self.audio_temp,
+                f"{self.base_filename}_vconcat.txt"
             ]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
-            app_logger.info(f"Final audio saved: {final_mp3}")
+            temp_files_to_delete.extend(getattr(self, 'recorded_video_parts', []))
+            temp_files_to_delete.extend(getattr(self, 'recorded_audio_parts', []))
             
-            try:
-                os.remove(final_aud_temp)
-            except: pass
+            for temp_f in temp_files_to_delete:
+                if temp_f and os.path.exists(temp_f):
+                    try:
+                        os.remove(temp_f)
+                    except Exception as e:
+                        pass
+            
+            stray_files = glob.glob(f"{self.base_filename}*temp*.wav*") + glob.glob(f"{self.base_filename}*_part*.wav")
+            for stray in stray_files:
+                if os.path.exists(stray):
+                    try: os.remove(stray)
+                    except: pass
+
+            app_logger.info("Task completed successfully!")
+
+            if hasattr(self, 'browser_thread') and self.browser_thread.is_alive():
+                if threading.current_thread() != self.browser_thread:
+                    self.browser_thread.join(timeout=5)
+
+    
+
+    def _find_window_by_substring(self, substring):
+        EnumWindows = ctypes.windll.user32.EnumWindows
+        EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
+        GetWindowText = ctypes.windll.user32.GetWindowTextW
+        GetWindowTextLength = ctypes.windll.user32.GetWindowTextLengthW
+        IsWindowVisible = ctypes.windll.user32.IsWindowVisible
+
+        found_titles = []
+        def foreach_window(hwnd, lParam):
+            if IsWindowVisible(hwnd):
+                length = GetWindowTextLength(hwnd)
+                if length > 0:
+                    buff = ctypes.create_unicode_buffer(length + 1)
+                    GetWindowText(hwnd, buff, length + 1)
+                    if substring in buff.value:
+                        found_titles.append(buff.value)
+                        return False
+            return True
+        EnumWindows(EnumWindowsProc(foreach_window), 0)
+        return found_titles[0] if found_titles else None
+
 
     def perform_login(self):
         try:
@@ -365,19 +486,15 @@ class SkyroomClassBot:
                 self.driver.find_element(By.ID, "btn_login").click()
                 app_logger.info("Logged in with credentials.")
                 
-
             elif self.user_name and not self.password:
-
                 wait.until(EC.element_to_be_clickable((By.ID, "btn_guest"))).click()
                 
-
                 guest_name_input = wait.until(EC.presence_of_element_located(
                     (By.CSS_SELECTOR, ".dialog-content input.full-width")
                 ))
                 guest_name_input.clear()
                 guest_name_input.send_keys(self.user_name)
                 
-
                 submit_guest_btn = wait.until(EC.element_to_be_clickable(
                     (By.CSS_SELECTOR, ".dialog-footer button.btn")
                 ))
@@ -385,14 +502,12 @@ class SkyroomClassBot:
                 
                 app_logger.info(f"Successfully logged in as GUEST with name: {self.user_name}")
                 
-
             else:
                 app_logger.error("Username is required but was not provided. Cannot join class.")
                 self.stop_all()
 
         except Exception as e:
             app_logger.error(f"Login timeout or error: {e}")
-
 
     def run_browser(self):
         app_logger.info("Launching browser: CHROME")
