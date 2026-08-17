@@ -17,7 +17,7 @@ class SkyroomGUI:
         self.root.geometry("950x800")
 
         self.active_bots = []
-        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)  # شنود دکمه ضربدر
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing) 
         
         app_logger.info("Initializing Skyroom GUI application (Windows Edition).")
         database.init_db()
@@ -47,17 +47,26 @@ class SkyroomGUI:
             if not messagebox.askyesno("Confirm Exit", msg):
                 return
                 
-        app_logger.info("GUI closed by user. Initiating background save...")
+        app_logger.info("GUI closed by user. Safely saving all files in the background...")
+        
+        self.root.withdraw()
         
         def background_save():
-            for bot in running_bots:
-                bot.stop_all()
-        
-        if running_bots:
-            save_thread = threading.Thread(target=background_save, daemon=False)
-            save_thread.start()
+            for bot in self.active_bots:
+                if bot.is_running:
+                    bot.stop_all()
+                    
+            for bot in self.active_bots:
+                if hasattr(bot, 'browser_thread') and bot.browser_thread.is_alive():
+                    bot.browser_thread.join()
+                if hasattr(bot, 'capture_thread') and bot.capture_thread.is_alive():
+                    bot.capture_thread.join()
+                    
+            app_logger.info("All background tasks finished. Exiting program gracefully.")
+            os._exit(0)  
             
-        self.root.destroy()
+        save_thread = threading.Thread(target=background_save)
+        save_thread.start()
 
     def build_list_tab(self):
         columns = ("db_id", "row_num", "user", "class", "schedule", "mode")
@@ -85,7 +94,7 @@ class SkyroomGUI:
         
         self.btn_ignore = tk.Button(btn_frame, text="⏸ Ignore Next Session", bg="#607d8b", fg="white", font=("Arial", 9, "bold"), command=self.toggle_ignore_next)
         self.btn_ignore.pack(side=tk.LEFT, padx=5)
-        self.btn_ignore.config(state=tk.DISABLED) # غیرفعال تا زمانی که ردیفی انتخاب شود
+        self.btn_ignore.config(state=tk.DISABLED) 
         
         tk.Button(btn_frame, text="Delete Class", bg="#ff4c4c", fg="white", command=self.delete_selected).pack(side=tk.RIGHT, padx=5)
         tk.Button(btn_frame, text="Edit Class", bg="#2196F3", fg="white", command=self.edit_selected).pack(side=tk.RIGHT, padx=5)
@@ -383,6 +392,16 @@ class SkyroomGUI:
             self.refresh_list()
             self.on_tree_select(None)
 
+    
+    def stop_existing_bots(self):
+        # این تابع تمام ربات‌های فعال را پیدا کرده و با آرامش می‌بندد
+        running_bots = [b for b in self.active_bots if b.is_running]
+        if running_bots:
+            app_logger.info("Closing previous active classes before starting a new one...")
+            for bot in running_bots:
+                bot.stop_all()
+            self.active_bots.clear()
+
     def join_now(self):
         selected = self.tree.focus()
         if not selected:
@@ -395,9 +414,17 @@ class SkyroomGUI:
         
         if messagebox.askyesno("Join Now", f"Start '{target[3]}' immediately?"):
             app_logger.info(f"Manual join requested for class: {target[3]}")
-            bot = SkyroomClassBot(target)
-            self.active_bots.append(bot)
-            threading.Thread(target=bot.start, daemon=True).start()
+            
+            # اجرای فرآیند توقف و استارت در یک ترد جداگانه تا رابط گرافیکی (GUI) فریز نشود
+            def launch_new_bot():
+                self.stop_existing_bots()
+                bot = SkyroomClassBot(target)
+                self.active_bots.append(bot)
+                bot.start()
+                
+            threading.Thread(target=launch_new_bot, daemon=True).start()
+
+
     def scheduler_thread(self):
         app_logger.info("Background scheduler thread started successfully.")
         while True:
@@ -425,14 +452,18 @@ class SkyroomGUI:
                             continue
                             
                         app_logger.info(f"Schedule matched! Initializing bot for class: {cls[3]}")
-                        bot = SkyroomClassBot(cls)
-                        self.active_bots.append(bot)
-                        bot.start()
+                        
+                        def scheduled_launch():
+                            self.stop_existing_bots()
+                            bot = SkyroomClassBot(cls)
+                            self.active_bots.append(bot)
+                            bot.start()
+                            
+                        threading.Thread(target=scheduled_launch, daemon=True).start()
                         time.sleep(60) 
                 except Exception as e:
                     app_logger.error(f"Error in scheduler loop: {e}", exc_info=True)
             time.sleep(30)
-
 
 
 if __name__ == "__main__":
